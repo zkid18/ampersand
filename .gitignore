@@ -1,0 +1,9 @@
+# Virtual environment folder
+env/
+
+# Credentials directory
+credentials/
+
+# Image and HTML folders
+img/
+html/

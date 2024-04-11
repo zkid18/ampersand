@@ -1,0 +1,13 @@
+{
+    "total_number_of_plans": "integer",
+    "plan_details": [
+      {
+        "name": "string",
+        "features_included":  ["string"],
+        "detailed_features":  ["string"],
+        "starting_price": ["string"],
+        "billing_frequency": ["string"],
+        "is_free_plan": "boolean"
+      }
+    ]
+  }
