@@ -8,18 +8,18 @@ from dataclasses import dataclass
 from openai import OpenAI
 from typing import Callable
 
-from .errors import (
+from src.errors import (
     ScrapeghostError,
     TooManyTokens,
     MaxCostExceeded,
     BadStop,
 )
-from .responses import Response
-from .utils import (
+from src.responses import Response
+from src.utils import (
     logger,
     _tokens,
 )
-from .models import _model_dict
+from src.models import _model_dict
 
 Postprocessor = Callable[[Response, "OpenAiCall"], Response]
 
