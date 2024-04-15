@@ -66,12 +66,9 @@ def check_websites_accessible(websites):
         # Ensure the website includes www if it doesn't have a subdomain
         if "://" in website and not website.split("://")[1].startswith("www."):
             website = website.split("://")[0] + "://www." + website.split("://")[1]
-        
-        # Append "/pricing" to the URL
-        website_with_pricing = website.rstrip('/') + '/pricing'
 
         try:
-            response = requests.get(website_with_pricing, timeout=10)
+            response = requests.get(website, timeout=10)
             if response.status_code != 200:
                 # If the status code is not in the 200-299 range, add to the list
                 inaccessible_websites.append(website)

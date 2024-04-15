@@ -3,7 +3,7 @@
     "plan_details": [
       {
         "name": "string",
-        "features_included":  ["string"],
+        "main_features":  ["string"],
         "detailed_features":  ["string"],
         "starting_price": ["string"],
         "billing_frequency": ["string"],

@@ -18,7 +18,6 @@ class Parser:
 
     def parse_page(self):
         website = self._ensure_website_format(self.website)
-        website_with_pricing = website.rstrip('/') + '/pricing'
         timestamp = time.strftime("%Y-%m-%d")
 
         html_directory = os.path.join(os.getcwd(), "html")
@@ -29,10 +28,10 @@ class Parser:
         img_filename = os.path.join(img_directory, f"{website.split('//')[-1].split('/')[0]}_{timestamp}.png")
 
         try: 
-            logging.info(f"Accessing the page {website_with_pricing}")
-            self.driver.get(website_with_pricing)
+            logging.info(f"Accessing the page {website}")
+            self.driver.get(website)
         except WebDriverException:
-            logging.error(f"Page is down for {website_with_pricing}")
+            logging.error(f"Page is down for {website}")
             return None
 
         html = self.driver.page_source
