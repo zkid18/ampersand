@@ -40,7 +40,6 @@ class RetryRule:
     retry_wait: int = 30  # seconds
     retry_errors: tuple = RETRY_ERRORS
 
-
 class OpenAiCall:
     _default_postprocessors: list[Postprocessor] = []
 
@@ -49,11 +48,11 @@ class OpenAiCall:
         *,
         # OpenAI parameters
         models: list[str] = ["gpt-3.5-turbo", "gpt-4"],
-        model_params: dict | None = None,
+        model_params: dict or None = None,
         max_cost: float = 1,
         # instructions
-        extra_instructions: list[str] | None = None,
-        postprocessors: list | None = None,
+        extra_instructions: list[str] or None = None,
+        postprocessors: list or None = None,
         # retry rules
         retry: RetryRule = RetryRule(1, 30),
     ):

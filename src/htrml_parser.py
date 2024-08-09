@@ -21,6 +21,8 @@ class Parser:
         timestamp = time.strftime("%Y-%m-%d")
 
         html_directory = os.path.join(os.getcwd(), "html")
+        if not os.path.exists(html_directory):
+            os.makedirs(html_directory)
         html_filename = os.path.join(html_directory, f"{website.split('//')[-1].split('/')[0]}_{timestamp}.html")
         html_transformed_filename = os.path.join(html_directory, f"{website.split('//')[-1].split('/')[0]}_{timestamp}_transformed.html")
         

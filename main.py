@@ -22,7 +22,7 @@ def get_webdriver():
     options.add_argument("--disable-extensions")
     options.add_argument("--remote-debugging-port=9222")  # Th
     
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    driver = webdriver.Chrome(options=options)
     
     try:
         yield driver
@@ -36,6 +36,7 @@ if __name__ == "__main__":
     parser.add_argument("--schema_path", default='schema/main_schema.json', help="Path to the schema JSON file.")
     parser.add_argument("--prompt_path", default='prompts/text_prompt.md', help="Path to the prompt file for scrapper.")
     parser.add_argument("--use_vision_scrapper", action='store_true', help="Use the vision scrapper instead of the standard scrapper.")
+    parser.add_argument("--upload_to_s3", default=False, action='store_true', help="Specify whether to upload files to S3.")
     args = parser.parse_args()
 
     website = args.url
@@ -47,7 +48,9 @@ if __name__ == "__main__":
     with get_webdriver() as driver:
         html_parser = Parser(driver=driver, website=website)
         img_filename, html_filename, html_transformed = html_parser.parse_page()
-        img_url = upload_to_digitalocean_space(img_filename)
+        print(html_transformed)
+        if args.upload_to_s3:
+            img_url = upload_to_digitalocean_space(img_filename)
 
         if args.use_vision_scrapper:
             vision_scrapper = SchemaScrapper(schema, prompt_path)

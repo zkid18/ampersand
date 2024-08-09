@@ -9,11 +9,11 @@ class Response:
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
     api_time: float = 0
-    data: dict | list | str = ""
+    data: dict or list or str = ""
 
 
 @dataclass
 class ScrapeResponse(Response):
-    url: str | None = None
-    parsed_html: lxml.html.HtmlElement | None = None
-    auto_split_length: int | None = None
+    url: str or None = None
+    parsed_html: lxml.html.HtmlElement or None = None
+    auto_split_length: int or None = None

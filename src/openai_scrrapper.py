@@ -10,15 +10,15 @@ class SchemaScrapper(OpenAiCall):
 
     def __init__(
       self, 
-      schema: dict | str | list,
+      schema: dict or str or list,
       promt_file_name: str,
       *, 
       models: list[str] = ["gpt-3.5-turbo", "gpt-4-turbo-preview"],
-      model_params: dict | None = None,
+      model_params: dict or None = None,
       max_cost: float = 1,
       retry: RetryRule = RetryRule(1, 30),
-      extra_instructions: list[str] | None = None,
-      postprocessors: list | None = None
+      extra_instructions: list[str] or None = None,
+      postprocessors: list or None = None
    ):
       super().__init__(
           models=models, 
