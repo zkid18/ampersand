@@ -1,6 +1,6 @@
 # Virtual environment folder
 env/
-
+venv/
 # Credentials directory
 credentials/
 
