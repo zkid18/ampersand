@@ -1,0 +1,184 @@
+"""Parse email messages (newsletters) into markdown."""
+
+from __future__ import annotations
+
+import email
+import email.policy
+import re
+from datetime import datetime, timezone
+from email.message import EmailMessage
+from pathlib import Path
+
+from bs4 import BeautifulSoup
+from markdownify import markdownify
+
+from ampersand.models import CapturedContent, ContentType
+
+
+def parse_eml_file(path: Path) -> CapturedContent:
+    """Parse a .eml file and return captured content."""
+    raw = path.read_bytes()
+    return parse_email_bytes(raw)
+
+
+def parse_email_bytes(raw: bytes) -> CapturedContent:
+    """Parse raw email bytes into captured content."""
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    return _extract_from_message(msg)
+
+
+def _extract_from_message(msg: EmailMessage) -> CapturedContent:
+    """Extract content and metadata from an EmailMessage."""
+    # Cast to str — Python email policy returns header objects, not plain strings
+    subject = str(msg.get("subject", "Untitled Newsletter"))
+    from_header = str(msg.get("from", ""))
+    date_header = str(msg.get("date", ""))
+
+    # Parse author from "Name <email>" format
+    author = _parse_author(from_header)
+
+    # Parse date
+    captured_at = _parse_date(date_header)
+
+    # Get HTML body (preferred) or plain text fallback
+    html_body = _get_html_body(msg)
+    if html_body:
+        markdown = _html_to_clean_markdown(html_body)
+    else:
+        plain_body = _get_plain_body(msg)
+        markdown = plain_body if plain_body else "*No content found in email.*"
+
+    return CapturedContent(
+        url=f"email://{from_header}",
+        title=subject,
+        content_markdown=markdown,
+        content_type=ContentType.NEWSLETTER,
+        author=author,
+        captured_at=captured_at,
+    )
+
+
+def _get_html_body(msg: EmailMessage) -> str | None:
+    """Extract HTML body from a MIME message."""
+    if msg.get_content_type() == "text/html":
+        return msg.get_content()
+
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/html":
+                return part.get_content()
+    return None
+
+
+def _get_plain_body(msg: EmailMessage) -> str | None:
+    """Extract plain text body from a MIME message."""
+    if msg.get_content_type() == "text/plain":
+        return msg.get_content()
+
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain":
+                return part.get_content()
+    return None
+
+
+def _html_to_clean_markdown(html: str) -> str:
+    """Convert newsletter HTML to clean markdown, stripping email cruft."""
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Remove elements that are never useful content
+    for tag in soup.find_all(["style", "script", "noscript", "head"]):
+        tag.decompose()
+
+    # Remove tracking pixels (1x1 images)
+    for img in soup.find_all("img"):
+        attrs = img.attrs
+        if attrs.get("width") in ("1", "0") or attrs.get("height") in ("1", "0"):
+            img.decompose()
+            continue
+        src = attrs.get("src", "")
+        if any(k in src.lower() for k in ("track", "beacon", "pixel", "open.", "spacer")):
+            img.decompose()
+
+    # Unwrap layout tables — email newsletters use <table> for layout, not data.
+    # Replace table/tr/td structure with their inner content.
+    for tag_name in ["table", "tbody", "thead", "tr", "td", "th"]:
+        for tag in soup.find_all(tag_name):
+            tag.unwrap()
+
+    # Remove MS Office / MJML junk wrappers
+    for div in soup.find_all("div"):
+        classes = " ".join(div.get("class", []))
+        if any(k in classes for k in ("mj-", "outlook", "wrapper")):
+            div.unwrap()
+
+    clean_html = str(soup)
+
+    # Convert to markdown
+    md = markdownify(clean_html, heading_style="ATX")
+
+    # Clean up the result
+    md = _clean_markdown(md)
+    # Remove leading H1 if present (converter.py adds its own from the title)
+    md = re.sub(r"^#\s+.+\n*", "", md, count=1).lstrip("\n")
+    return md
+
+
+def _clean_markdown(md: str) -> str:
+    """Clean up converted markdown — remove email footer cruft."""
+    lines = md.split("\n")
+    cleaned = []
+    skip_from_here = False
+
+    for line in lines:
+        lower = line.lower().strip()
+
+        # Stop at common email footer markers
+        if any(marker in lower for marker in [
+            "unsubscribe",
+            "update your preferences",
+            "manage your subscription",
+            "view in browser",
+            "view this email",
+            "email preferences",
+            "you are receiving this",
+            "this email was sent",
+            "to stop receiving",
+            "if you no longer wish",
+        ]):
+            skip_from_here = True
+            continue
+
+        if skip_from_here:
+            continue
+
+        cleaned.append(line)
+
+    result = "\n".join(cleaned)
+    # Collapse multiple blank lines
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+
+
+def _parse_author(from_header: str) -> str | None:
+    """Extract display name from 'Name <email>' format."""
+    if not from_header:
+        return None
+    # Match "Display Name <email@example.com>"
+    m = re.match(r'"?([^"<]+)"?\s*<', from_header)
+    if m:
+        return m.group(1).strip()
+    return from_header.strip()
+
+
+def _parse_date(date_header: str) -> datetime:
+    """Parse email date header, fallback to now."""
+    if not date_header:
+        return datetime.now(timezone.utc)
+    try:
+        parsed = email.utils.parsedate_to_datetime(date_header)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except Exception:
+        return datetime.now(timezone.utc)
