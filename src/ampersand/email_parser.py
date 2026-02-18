@@ -23,8 +23,35 @@ def parse_eml_file(path: Path) -> CapturedContent:
 
 def parse_email_bytes(raw: bytes) -> CapturedContent:
     """Parse raw email bytes into captured content."""
+    raw = _fix_raw_preamble(raw)
     msg = email.message_from_bytes(raw, policy=email.policy.default)
     return _extract_from_message(msg)
+
+
+# Pattern matching a valid RFC 2822 header line: "Header-Name: value"
+_HEADER_RE = re.compile(rb"^[A-Za-z][A-Za-z0-9-]*:\s", re.MULTILINE)
+
+
+def _fix_raw_preamble(raw: bytes) -> bytes:
+    """Strip any junk before the first valid email header.
+
+    Yahoo Mail's 'View raw message' prepends a bare date line and other
+    non-header text. Python's email parser treats that as the body start
+    and silently ignores all real headers.
+    """
+    # Check if the first line is already a valid header
+    first_line_end = raw.find(b"\n")
+    if first_line_end == -1:
+        return raw
+    first_line = raw[:first_line_end]
+    if _HEADER_RE.match(first_line):
+        return raw  # Already starts with a valid header
+
+    # Find the first valid header line
+    m = _HEADER_RE.search(raw)
+    if m:
+        return raw[m.start():]
+    return raw
 
 
 def _extract_from_message(msg: EmailMessage) -> CapturedContent:
@@ -89,6 +116,18 @@ def _html_to_clean_markdown(html: str) -> str:
     # Remove elements that are never useful content
     for tag in soup.find_all(["style", "script", "noscript", "head"]):
         tag.decompose()
+
+    # Remove hidden preheader/preview text (Ghost, Substack, Mailchimp)
+    for tag in soup.find_all(attrs={"class": re.compile(r"preheader|preview-text")}):
+        tag.decompose()
+    for tag in soup.find_all(style=re.compile(r"display:\s*none|max-height:\s*0|overflow:\s*hidden")):
+        tag.decompose()
+
+    # Remove email header chrome (Ghost: site logo, title link, byline, feature image)
+    for cls in ["header-image", "site-info", "site-url", "post-title",
+                "post-meta", "feature-image", "header-main", "header"]:
+        for tag in soup.find_all(attrs={"class": re.compile(rf"\b{cls}\b")}):
+            tag.decompose()
 
     # Remove tracking pixels (1x1 images)
     for img in soup.find_all("img"):
