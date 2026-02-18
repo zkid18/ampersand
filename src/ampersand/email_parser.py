@@ -153,11 +153,30 @@ def _html_to_clean_markdown(html: str) -> str:
         if any(k in src.lower() for k in ("track", "beacon", "pixel", "open.", "spacer")):
             img.decompose()
 
+    # Identify data tables — those with <thead> or <th> as direct children,
+    # not inherited from nested tables inside layout wrappers.
+    for table in soup.find_all("table"):
+        if table.find("thead", recursive=False):
+            table["data-keep"] = "1"
+            continue
+        for tr in table.find_all("tr", recursive=False):
+            if tr.find("th", recursive=False):
+                table["data-keep"] = "1"
+                break
+
     # Unwrap layout tables — email newsletters use <table> for layout, not data.
-    # Replace table/tr/td structure with their inner content.
+    # Preserve data tables and their internal structure.
     for tag_name in ["table", "tbody", "thead", "tr", "td", "th"]:
         for tag in soup.find_all(tag_name):
+            if tag.get("data-keep") == "1":
+                continue
+            if tag.find_parent("table", attrs={"data-keep": "1"}):
+                continue
             tag.unwrap()
+
+    # Clean up data-keep markers
+    for table in soup.find_all("table", attrs={"data-keep": "1"}):
+        del table["data-keep"]
 
     # Remove MS Office / MJML junk wrappers
     for div in soup.find_all("div"):
@@ -186,6 +205,10 @@ def _clean_markdown(md: str) -> str:
     for line in lines:
         lower = line.lower().strip()
 
+        # Skip "forwarded this newsletter" subscribe prompts (ConvertKit, etc.)
+        if "forwarded this newsletter" in lower or "forwarded this email" in lower:
+            continue
+
         # Stop at common email footer markers
         if any(marker in lower for marker in [
             "unsubscribe",
@@ -210,7 +233,29 @@ def _clean_markdown(md: str) -> str:
     result = "\n".join(cleaned)
     # Collapse multiple blank lines
     result = re.sub(r"\n{3,}", "\n\n", result)
-    return result.strip()
+    # Strip zero-width spaces
+    result = result.replace("\u200b", "")
+    # Trim trailing footer cruft (postal addresses, short non-content lines)
+    lines_out = result.rstrip().split("\n")
+    while lines_out and _is_footer_cruft(lines_out[-1]):
+        lines_out.pop()
+    return "\n".join(lines_out).strip()
+
+
+_ADDRESS_RE = re.compile(r"\d+\s+\w+.*(road|street|st|ave|blvd|suite|ste|po box)", re.IGNORECASE)
+
+
+def _is_footer_cruft(line: str) -> bool:
+    """Check if a trailing line looks like footer cruft (address, copyright, etc.)."""
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if _ADDRESS_RE.search(stripped):
+        return True
+    lower = stripped.lower()
+    if lower.startswith("©") or lower.startswith("copyright"):
+        return True
+    return False
 
 
 def _parse_author(from_header: str) -> str | None:
