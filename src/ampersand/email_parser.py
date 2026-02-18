@@ -123,15 +123,29 @@ def _html_to_clean_markdown(html: str) -> str:
     for tag in soup.find_all(style=re.compile(r"display:\s*none|max-height:\s*0|overflow:\s*hidden")):
         tag.decompose()
 
-    # Remove email header chrome (Ghost: site logo, title link, byline, feature image)
+    # Remove email header chrome (Ghost: site logo, title, byline, feature image)
+    # Use class_ for exact CSS class matching (avoids "header" matching "header-anchor-post")
     for cls in ["header-image", "site-info", "site-url", "post-title",
-                "post-meta", "feature-image", "header-main", "header"]:
-        for tag in soup.find_all(attrs={"class": re.compile(rf"\b{cls}\b")}):
+                "post-meta", "feature-image", "header-main", "header",
+                "post-header"]:
+        for tag in soup.find_all(class_=cls):
+            tag.decompose()
+
+    # Remove Beehiiv header section (contains duplicate title, date, subtitle)
+    for tag in soup.find_all(id="header"):
+        tag.decompose()
+
+    # Remove Substack UI chrome (like/comment/share buttons, subscribe widgets)
+    for cls in ["email-ufi-2-top", "email-ufi-2-bottom",
+                "subscription-widget-wrap", "footer"]:
+        for tag in soup.find_all(class_=cls):
             tag.decompose()
 
     # Remove tracking pixels (1x1 images)
     for img in soup.find_all("img"):
         attrs = img.attrs
+        if not attrs:
+            continue
         if attrs.get("width") in ("1", "0") or attrs.get("height") in ("1", "0"):
             img.decompose()
             continue
@@ -158,8 +172,8 @@ def _html_to_clean_markdown(html: str) -> str:
 
     # Clean up the result
     md = _clean_markdown(md)
-    # Remove leading H1 if present (converter.py adds its own from the title)
-    md = re.sub(r"^#\s+.+\n*", "", md, count=1).lstrip("\n")
+    # Remove first H1 if present (converter.py adds its own from the title)
+    md = re.sub(r"^#\s+.+\n*", "", md, count=1, flags=re.MULTILINE).lstrip("\n")
     return md
 
 
