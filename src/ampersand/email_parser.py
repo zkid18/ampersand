@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import email
 import email.policy
+import logging
 import re
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from bs4 import BeautifulSoup
 from markdownify import markdownify
@@ -23,8 +26,18 @@ def parse_eml_file(path: Path) -> CapturedContent:
 
 def parse_email_bytes(raw: bytes) -> CapturedContent:
     """Parse raw email bytes into captured content."""
+    msg = parse_raw_to_message(raw)
+    return extract_from_message(msg)
+
+
+def parse_raw_to_message(raw: bytes) -> EmailMessage:
+    """Parse raw email bytes into an EmailMessage (for header inspection)."""
     raw = _fix_raw_preamble(raw)
-    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    return email.message_from_bytes(raw, policy=email.policy.default)
+
+
+def extract_from_message(msg: EmailMessage) -> CapturedContent:
+    """Extract content and metadata from an EmailMessage."""
     return _extract_from_message(msg)
 
 
@@ -60,6 +73,7 @@ def _extract_from_message(msg: EmailMessage) -> CapturedContent:
     subject = str(msg.get("subject", "Untitled Newsletter"))
     from_header = str(msg.get("from", ""))
     date_header = str(msg.get("date", ""))
+    logger.debug("Parsing email: subject=%r from=%r", subject, from_header)
 
     # Parse author from "Name <email>" format
     author = _parse_author(from_header)
@@ -70,13 +84,22 @@ def _extract_from_message(msg: EmailMessage) -> CapturedContent:
     # Get HTML body (preferred) or plain text fallback
     html_body = _get_html_body(msg)
     if html_body:
+        logger.debug("Using HTML body (%d chars)", len(html_body))
         markdown = _html_to_clean_markdown(html_body)
     else:
         plain_body = _get_plain_body(msg)
+        logger.debug("Using plain text body (%d chars)", len(plain_body) if plain_body else 0)
         markdown = plain_body if plain_body else "*No content found in email.*"
 
+    # Build a unique URL using Message-ID (RFC 2822) for dedup
+    message_id = str(msg.get("message-id", "")).strip().strip("<>")
+    if message_id:
+        url = f"email://msg-id/{message_id}"
+    else:
+        url = f"email://{from_header}/{subject}"
+
     return CapturedContent(
-        url=f"email://{from_header}",
+        url=url,
         title=subject,
         content_markdown=markdown,
         content_type=ContentType.NEWSLETTER,

@@ -3,59 +3,15 @@
 from __future__ import annotations
 
 import imaplib
-import json
+import logging
 import time
-from pathlib import Path
-from typing import Callable
+from email.message import EmailMessage
+from typing import Callable, Generator
 
-from ampersand.email_parser import parse_email_bytes
+from ampersand.email_parser import extract_from_message, parse_raw_to_message
 from ampersand.models import CapturedContent
-from ampersand.state import DEFAULT_STATE_DIR
 
-CONFIG_FILE = "config.json"
-
-
-def _config_path(state_dir: Path = DEFAULT_STATE_DIR) -> Path:
-    return state_dir / CONFIG_FILE
-
-
-def save_email_config(
-    server: str,
-    email_addr: str,
-    password: str,
-    port: int = 993,
-    mailbox: str = "INBOX",
-    state_dir: Path = DEFAULT_STATE_DIR,
-) -> None:
-    """Save IMAP connection settings."""
-    state_dir.mkdir(parents=True, exist_ok=True)
-    config = {
-        "imap": {
-            "server": server,
-            "port": port,
-            "email": email_addr,
-            "password": password,
-            "mailbox": mailbox,
-        }
-    }
-    path = _config_path(state_dir)
-
-    # Merge with existing config if present
-    if path.exists():
-        existing = json.loads(path.read_text(encoding="utf-8"))
-        existing.update(config)
-        config = existing
-
-    path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-
-
-def load_email_config(state_dir: Path = DEFAULT_STATE_DIR) -> dict | None:
-    """Load IMAP connection settings."""
-    path = _config_path(state_dir)
-    if not path.exists():
-        return None
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return data.get("imap")
+logger = logging.getLogger(__name__)
 
 
 def _connect(config: dict) -> imaplib.IMAP4_SSL:
@@ -66,26 +22,81 @@ def _connect(config: dict) -> imaplib.IMAP4_SSL:
     return conn
 
 
-def fetch_unseen(config: dict) -> list[tuple[bytes, CapturedContent]]:
-    """Fetch all unseen emails and parse them. Returns (uid, content) pairs."""
+def fetch_unseen(
+    config: dict,
+    email_filter: Callable[[EmailMessage], bool] | None = None,
+    batch_size: int = 50,
+) -> Generator[tuple[bytes, CapturedContent], None, None]:
+    """Fetch all unseen emails and parse them. Yields (uid, content) pairs.
+
+    Processes emails in batches with automatic reconnection on failure.
+    If *email_filter* is provided, only emails where the callback returns True
+    are yielded.
+    """
     conn = _connect(config)
     try:
         _, msg_ids = conn.search(None, "UNSEEN")
         if not msg_ids[0]:
-            return []
+            return
+        uids = msg_ids[0].split()
+        logger.info("Found %d unseen email(s)", len(uids))
+    except Exception:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+        raise
 
-        results = []
-        for uid in msg_ids[0].split():
+    processed = set()
+    retries = 0
+    max_retries = 3
+    i = 0
+
+    while i < len(uids):
+        uid = uids[i]
+        if uid in processed:
+            i += 1
+            continue
+        try:
             _, data = conn.fetch(uid, "(RFC822)")
-            if data and data[0] and isinstance(data[0], tuple):
-                raw = data[0][1]
-                content = parse_email_bytes(raw)
-                results.append((uid, content))
+            if not (data and data[0] and isinstance(data[0], tuple)):
+                logger.warning("Empty response for UID %s, skipping", uid)
+                i += 1
+                continue
+            raw = data[0][1]
+            msg = parse_raw_to_message(raw)
+            if email_filter and not email_filter(msg):
+                conn.store(uid, "+FLAGS", "\\Seen")
+                i += 1
+                continue
+            content = extract_from_message(msg)
+            conn.store(uid, "+FLAGS", "\\Seen")
+            processed.add(uid)
+            yield (uid, content)
+            i += 1
+            retries = 0  # reset on success
+        except (imaplib.IMAP4.error, OSError, ConnectionError) as exc:
+            logger.warning("Connection lost at UID %s: %s", uid, exc)
+            retries += 1
+            if retries > max_retries:
+                logger.error("Max retries (%d) reached, stopping", max_retries)
+                return
+            time.sleep(2 ** retries)
+            try:
+                conn = _connect(config)
+            except Exception as reconn_exc:
+                logger.error("Reconnect failed: %s", reconn_exc)
+                return
+        except Exception as exc:
+            # Parse error — skip this email, continue
+            logger.warning("Failed to process UID %s: %s", uid, exc)
+            i += 1
 
-        return results
-    finally:
+    try:
         conn.close()
         conn.logout()
+    except Exception:
+        pass
 
 
 def mark_seen(config: dict, uid: bytes) -> None:
@@ -102,6 +113,7 @@ def watch(
     config: dict,
     on_email: Callable[[CapturedContent], None],
     poll_interval: int = 30,
+    email_filter: Callable[[EmailMessage], bool] | None = None,
 ) -> None:
     """Watch for new emails using IMAP IDLE (with polling fallback).
 
@@ -112,9 +124,9 @@ def watch(
         try:
             # Try IMAP IDLE if supported
             if _supports_idle(conn):
-                _idle_loop(conn, config, on_email)
+                _idle_loop(conn, config, on_email, email_filter)
             else:
-                _poll_loop(conn, config, on_email, poll_interval)
+                _poll_loop(conn, config, on_email, poll_interval, email_filter)
         except (imaplib.IMAP4.error, OSError):
             # Connection lost — reconnect after a delay
             time.sleep(5)
@@ -137,6 +149,7 @@ def _idle_loop(
     conn: imaplib.IMAP4_SSL,
     config: dict,
     on_email: Callable[[CapturedContent], None],
+    email_filter: Callable[[EmailMessage], bool] | None = None,
 ) -> None:
     """Use IMAP IDLE to wait for new emails."""
     while True:
@@ -157,7 +170,7 @@ def _idle_loop(
 
         # If we got an EXISTS notification, fetch new emails
         if "EXISTS" in response:
-            _process_unseen(conn, config, on_email)
+            _process_unseen(conn, config, on_email, email_filter)
 
 
 def _poll_loop(
@@ -165,10 +178,11 @@ def _poll_loop(
     config: dict,
     on_email: Callable[[CapturedContent], None],
     interval: int,
+    email_filter: Callable[[EmailMessage], bool] | None = None,
 ) -> None:
     """Poll for new emails at a regular interval."""
     while True:
-        _process_unseen(conn, config, on_email)
+        _process_unseen(conn, config, on_email, email_filter)
         time.sleep(interval)
         # NOOP to keep connection alive
         conn.noop()
@@ -178,6 +192,7 @@ def _process_unseen(
     conn: imaplib.IMAP4_SSL,
     config: dict,
     on_email: Callable[[CapturedContent], None],
+    email_filter: Callable[[EmailMessage], bool] | None = None,
 ) -> None:
     """Fetch and process all unseen emails on an existing connection."""
     _, msg_ids = conn.search(None, "UNSEEN")
@@ -185,10 +200,17 @@ def _process_unseen(
         return
 
     for uid in msg_ids[0].split():
-        _, data = conn.fetch(uid, "(RFC822)")
-        if data and data[0] and isinstance(data[0], tuple):
+        try:
+            _, data = conn.fetch(uid, "(RFC822)")
+            if not (data and data[0] and isinstance(data[0], tuple)):
+                continue
             raw = data[0][1]
-            content = parse_email_bytes(raw)
+            msg = parse_raw_to_message(raw)
+            if email_filter and not email_filter(msg):
+                continue
+            content = extract_from_message(msg)
             on_email(content)
             # Mark as seen
             conn.store(uid, "+FLAGS", "\\Seen")
+        except Exception as exc:
+            logger.warning("Failed to process UID %s: %s", uid, exc)

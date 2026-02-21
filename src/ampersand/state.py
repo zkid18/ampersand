@@ -71,3 +71,51 @@ class AppState:
     @property
     def captured_count(self) -> int:
         return len(self._data["captured"])
+
+    # --- Vault config ---
+
+    def set_vault(self, path: str, auto_sync: bool = False) -> None:
+        self._data["vault"] = {"path": path, "auto_sync": auto_sync}
+        self._save()
+
+    def get_vault(self) -> dict | None:
+        return self._data.get("vault")
+
+    def clear_vault(self) -> None:
+        self._data.pop("vault", None)
+        self._save()
+
+    # --- Email sender allowlist ---
+
+    def add_sender(self, sender: str) -> None:
+        """Add an email address or @domain to the allowlist."""
+        senders = self._data.setdefault("email_senders", [])
+        if sender not in senders:
+            senders.append(sender)
+            self._save()
+
+    def remove_sender(self, sender: str) -> bool:
+        """Remove a sender from the allowlist. Returns True if found."""
+        senders = self._data.get("email_senders", [])
+        if sender in senders:
+            senders.remove(sender)
+            self._save()
+            return True
+        return False
+
+    def list_senders(self) -> list[str]:
+        """Return the sender allowlist."""
+        return list(self._data.get("email_senders", []))
+
+    def is_sender_allowed(self, sender: str) -> bool:
+        """Check if a sender matches the allowlist (full address or @domain)."""
+        senders = self._data.get("email_senders", [])
+        sender_lower = sender.lower()
+        for entry in senders:
+            entry_lower = entry.lower()
+            if entry_lower == sender_lower:
+                return True
+            # Domain match: entry is "@domain.com", check sender ends with it
+            if entry_lower.startswith("@") and sender_lower.endswith(entry_lower):
+                return True
+        return False

@@ -12,8 +12,12 @@ from ampersand.converter import save_markdown, to_markdown
 from ampersand.email_parser import parse_eml_file
 from ampersand.extractor import extract_article, is_youtube_url
 from ampersand.feed import parse_feed
-from ampersand.imap import fetch_unseen, load_email_config, save_email_config, watch
+from ampersand.config import load_config, load_email_config, save_email_config, set_value
+from ampersand.imap import fetch_unseen, watch
+from ampersand.log_setup import setup_logging
+from ampersand.newsletter_filter import get_sender_email, is_newsletter
 from ampersand.state import AppState
+from ampersand.vault import VaultError, commit_file, has_remote, init_vault, is_vault, sync
 from ampersand.youtube import extract_youtube
 
 app = typer.Typer(
@@ -27,6 +31,12 @@ app.add_typer(feed_app, name="feed")
 
 email_app = typer.Typer(help="Capture newsletters via email.")
 app.add_typer(email_app, name="email")
+
+vault_app = typer.Typer(help="Manage Git-backed vault for collaborative storage.")
+app.add_typer(vault_app, name="vault")
+
+config_app = typer.Typer(help="View and update Ampersand configuration.")
+app.add_typer(config_app, name="config")
 
 
 def version_callback(value: bool) -> None:
@@ -47,6 +57,7 @@ def main(
     ),
 ) -> None:
     """Ampersand — capture anything from the web as markdown you own."""
+    setup_logging()
 
 
 # ── Single URL capture ────────────────────────────────────────────────
@@ -60,6 +71,32 @@ def _capture_url(url: str):
     else:
         typer.echo(f"Extracting article...", err=True)
         return extract_article(url)
+
+
+def _resolve_output(output: Path) -> tuple[Path, Path | None]:
+    """Return (output_dir, vault_path_or_none).
+
+    If the user didn't override --output (still "."), use the configured vault.
+    """
+    state = AppState()
+    vault = state.get_vault()
+    vault_path = Path(vault["path"]) if vault else None
+
+    if vault_path and output == Path("."):
+        return vault_path, vault_path
+    if vault_path and output.resolve().is_relative_to(vault_path.resolve()):
+        return output, vault_path
+    return output, None
+
+
+def _try_commit(vault_path: Path | None, filepath: Path) -> None:
+    """Commit a file to the vault, logging errors without crashing."""
+    if vault_path is None:
+        return
+    try:
+        commit_file(vault_path, filepath)
+    except VaultError as exc:
+        typer.echo(f"Warning: git commit failed: {exc}", err=True)
 
 
 @app.command()
@@ -93,8 +130,10 @@ def capture(
     if stdout:
         typer.echo(to_markdown(content))
     else:
-        filepath = save_markdown(content, output, filename)
+        output_dir, vault_path = _resolve_output(output)
+        filepath = save_markdown(content, output_dir, filename)
         typer.echo(f"Saved: {filepath}", err=True)
+        _try_commit(vault_path, filepath)
 
 
 # ── Feed commands ─────────────────────────────────────────────────────
@@ -181,6 +220,7 @@ def feed_sync(
     ),
 ) -> None:
     """Sync all subscribed feeds and capture new items."""
+    output_dir, vault_path = _resolve_output(output)
     state = AppState()
     feeds = state.list_feeds()
 
@@ -226,9 +266,10 @@ def feed_sync(
                 # Use feed entry metadata as fallback
                 if entry.author and not content.author:
                     content.author = entry.author
-                filepath = save_markdown(content, output)
+                filepath = save_markdown(content, output_dir)
                 state.mark_captured(entry.url)
                 typer.echo(f"  Saved: {filepath}", err=True)
+                _try_commit(vault_path, filepath)
                 total_captured += 1
             except Exception as e:
                 typer.echo(f"  Error capturing {entry.url}: {e}", err=True)
@@ -260,6 +301,63 @@ def email_setup(
     typer.echo("Run 'ampersand email sync' to fetch newsletters, or 'ampersand email watch' for real-time.")
 
 
+def _make_email_filter(state: AppState):
+    """Build a filter callback that checks allowlist + newsletter heuristics."""
+    from email.message import EmailMessage
+
+    def email_filter(msg: EmailMessage) -> bool:
+        try:
+            sender = get_sender_email(msg)
+        except Exception:
+            # Can't parse sender — capture aggressively rather than skip
+            return True
+        if state.is_sender_allowed(sender):
+            return True
+        if is_newsletter(msg):
+            # Auto-add sender so the allowlist grows over time
+            state.add_sender(sender)
+            return True
+        typer.echo(f"Skipped: {sender} (not detected as newsletter)", err=True)
+        return False
+
+    return email_filter
+
+
+@email_app.command("allow")
+def email_allow(
+    sender: str = typer.Argument(help="Email address or @domain to allow."),
+) -> None:
+    """Add a sender to the newsletter allowlist."""
+    state = AppState()
+    state.add_sender(sender)
+    typer.echo(f"Allowed: {sender}")
+
+
+@email_app.command("block")
+def email_block(
+    sender: str = typer.Argument(help="Email address or @domain to remove."),
+) -> None:
+    """Remove a sender from the newsletter allowlist."""
+    state = AppState()
+    if state.remove_sender(sender):
+        typer.echo(f"Removed: {sender}")
+    else:
+        typer.echo(f"Not in allowlist: {sender}", err=True)
+        raise typer.Exit(code=1)
+
+
+@email_app.command("senders")
+def email_senders() -> None:
+    """List all allowed newsletter senders."""
+    state = AppState()
+    senders = state.list_senders()
+    if not senders:
+        typer.echo("No senders in allowlist. Use 'ampersand email allow <sender>' to add one.")
+        return
+    for s in senders:
+        typer.echo(f"  {s}")
+
+
 @email_app.command("sync")
 def email_sync(
     output: Path = typer.Option(
@@ -269,35 +367,35 @@ def email_sync(
         help="Output directory for captured .md files.",
     ),
 ) -> None:
-    """Fetch and capture all unread emails from configured mailbox."""
+    """Fetch and capture all unread newsletters from configured mailbox."""
     config = load_email_config()
     if not config:
         typer.echo("No email configured. Run 'ampersand email setup' first.", err=True)
         raise typer.Exit(code=1)
 
+    output_dir, vault_path = _resolve_output(output)
     state = AppState()
     typer.echo("Checking for new emails...", err=True)
 
-    try:
-        results = fetch_unseen(config)
-    except Exception as e:
-        typer.echo(f"Error connecting to mailbox: {e}", err=True)
-        raise typer.Exit(code=1)
-
-    if not results:
-        typer.echo("No new emails.", err=True)
-        return
-
     captured = 0
-    for uid, content in results:
-        if state.is_captured(content.url):
-            continue
-        filepath = save_markdown(content, output)
-        state.mark_captured(content.url)
-        typer.echo(f"Saved: {filepath}", err=True)
-        captured += 1
+    try:
+        for uid, content in fetch_unseen(config, email_filter=_make_email_filter(state)):
+            if state.is_captured(content.url):
+                continue
+            filepath = save_markdown(content, output_dir)
+            state.mark_captured(content.url)
+            captured += 1
+            typer.echo(f"  [{captured}] Saved: {filepath}", err=True)
+            _try_commit(vault_path, filepath)
+    except Exception as e:
+        typer.echo(f"Error during email sync: {e}", err=True)
+        if captured == 0:
+            raise typer.Exit(code=1)
 
-    typer.echo(f"Done: captured {captured} newsletter(s).", err=True)
+    if captured == 0:
+        typer.echo("No new emails.", err=True)
+    else:
+        typer.echo(f"Done: captured {captured} newsletter(s).", err=True)
 
 
 @email_app.command("watch")
@@ -314,24 +412,31 @@ def email_watch(
         help="Poll interval in seconds (used when IDLE is not supported).",
     ),
 ) -> None:
-    """Watch mailbox for new emails in real-time (IMAP IDLE)."""
+    """Watch mailbox for new newsletters in real-time (IMAP IDLE)."""
     config = load_email_config()
     if not config:
         typer.echo("No email configured. Run 'ampersand email setup' first.", err=True)
         raise typer.Exit(code=1)
 
+    output_dir, vault_path = _resolve_output(output)
     state = AppState()
     typer.echo(f"Watching {config['email']} for new emails... (Ctrl+C to stop)", err=True)
 
     def on_email(content):
         if state.is_captured(content.url):
             return
-        filepath = save_markdown(content, output)
+        filepath = save_markdown(content, output_dir)
         state.mark_captured(content.url)
         typer.echo(f"Saved: {filepath}", err=True)
+        _try_commit(vault_path, filepath)
 
     try:
-        watch(config, on_email=on_email, poll_interval=poll_interval)
+        watch(
+            config,
+            on_email=on_email,
+            poll_interval=poll_interval,
+            email_filter=_make_email_filter(state),
+        )
     except KeyboardInterrupt:
         typer.echo("\nStopped watching.", err=True)
 
@@ -365,5 +470,129 @@ def email_parse(
     if stdout:
         typer.echo(to_markdown(content))
     else:
-        filepath = save_markdown(content, output)
+        output_dir, vault_path = _resolve_output(output)
+        filepath = save_markdown(content, output_dir)
         typer.echo(f"Saved: {filepath}", err=True)
+        _try_commit(vault_path, filepath)
+
+
+# ── Config commands ──────────────────────────────────────────────────
+
+
+@config_app.command("show")
+def config_show() -> None:
+    """Print current configuration as JSON."""
+    import json
+
+    config = load_config()
+    typer.echo(json.dumps(config, indent=2))
+
+
+@config_app.command("set")
+def config_set(
+    key: str = typer.Argument(help="Dotted config key (e.g. logging.level)."),
+    value: str = typer.Argument(help="Value to set."),
+) -> None:
+    """Set a configuration value (e.g. ampersand config set logging.level DEBUG)."""
+    try:
+        set_value(key, value)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Set {key} = {value}")
+
+
+# ── Vault commands ───────────────────────────────────────────────────
+
+
+@vault_app.command("init")
+def vault_init(
+    path: Path = typer.Argument(help="Directory to initialize as a vault."),
+    remote: str | None = typer.Option(
+        None,
+        "--remote",
+        "-r",
+        help="Git remote URL to add as origin.",
+    ),
+) -> None:
+    """Initialize a new Git-backed vault and set it as default."""
+    try:
+        init_vault(path, remote=remote)
+    except VaultError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    state = AppState()
+    state.set_vault(str(path.resolve()))
+    typer.echo(f"Vault initialized: {path.resolve()}")
+    if remote:
+        typer.echo(f"Remote: {remote}")
+
+
+@vault_app.command("sync")
+def vault_sync() -> None:
+    """Pull and push the current vault to its remote."""
+    state = AppState()
+    vault = state.get_vault()
+    if not vault:
+        typer.echo("No vault configured. Run 'ampersand vault init <path>' first.", err=True)
+        raise typer.Exit(code=1)
+
+    vault_path = Path(vault["path"])
+    if not has_remote(vault_path):
+        typer.echo("Vault has no remote configured. Add one with: git -C <vault> remote add origin <url>", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        sync(vault_path)
+        typer.echo("Vault synced.")
+    except VaultError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+
+@vault_app.command("status")
+def vault_status() -> None:
+    """Show current vault path and Git status."""
+    state = AppState()
+    vault = state.get_vault()
+    if not vault:
+        typer.echo("No vault configured.")
+        return
+
+    vault_path = Path(vault["path"])
+    typer.echo(f"Vault: {vault_path}")
+    typer.echo(f"Auto-sync: {vault.get('auto_sync', False)}")
+
+    if not is_vault(vault_path):
+        typer.echo("Warning: path is not a Git repository.", err=True)
+        return
+
+    from ampersand.vault import _git
+
+    # Uncommitted changes
+    result = _git(vault_path, "status", "--porcelain")
+    uncommitted = len([l for l in result.stdout.splitlines() if l.strip()])
+    typer.echo(f"Uncommitted files: {uncommitted}")
+
+    # Unpushed commits
+    if has_remote(vault_path):
+        try:
+            result = _git(vault_path, "rev-list", "--count", "@{u}..HEAD")
+            typer.echo(f"Unpushed commits: {result.stdout.strip()}")
+        except VaultError:
+            typer.echo("Unpushed commits: unknown (no upstream branch)")
+    else:
+        typer.echo("Remote: none")
+
+
+@vault_app.command("unset")
+def vault_unset() -> None:
+    """Remove vault from config (does not delete files)."""
+    state = AppState()
+    if not state.get_vault():
+        typer.echo("No vault configured.", err=True)
+        raise typer.Exit(code=1)
+
+    state.clear_vault()
+    typer.echo("Vault unset. Captures will save to current directory.")
