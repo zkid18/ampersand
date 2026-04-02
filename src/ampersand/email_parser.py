@@ -75,8 +75,9 @@ def _extract_from_message(msg: EmailMessage) -> CapturedContent:
     date_header = str(msg.get("date", ""))
     logger.debug("Parsing email: subject=%r from=%r", subject, from_header)
 
-    # Parse author from "Name <email>" format
+    # Parse author and sender email from "Name <email>" format
     author = _parse_author(from_header)
+    sender_email = _parse_sender_email(from_header)
 
     # Parse date
     captured_at = _parse_date(date_header)
@@ -104,6 +105,7 @@ def _extract_from_message(msg: EmailMessage) -> CapturedContent:
         content_markdown=markdown,
         content_type=ContentType.NEWSLETTER,
         author=author,
+        sender_email=sender_email,
         captured_at=captured_at,
     )
 
@@ -290,6 +292,19 @@ def _parse_author(from_header: str) -> str | None:
     if m:
         return m.group(1).strip()
     return from_header.strip()
+
+
+def _parse_sender_email(from_header: str) -> str | None:
+    """Extract bare email address from 'Name <email>' format."""
+    if not from_header:
+        return None
+    m = re.search(r'<([^>]+)>', from_header)
+    if m:
+        return m.group(1).strip()
+    # Bare email without angle brackets
+    if "@" in from_header:
+        return from_header.strip()
+    return None
 
 
 def _parse_date(date_header: str) -> datetime:

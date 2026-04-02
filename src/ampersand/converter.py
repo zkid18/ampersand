@@ -21,6 +21,8 @@ def to_markdown(content: CapturedContent) -> str:
     }
     if content.author:
         frontmatter["author"] = content.author
+    if content.sender_email:
+        frontmatter["sender_email"] = content.sender_email
 
     fm_str = yaml.dump(frontmatter, default_flow_style=False, allow_unicode=True, sort_keys=False)
 

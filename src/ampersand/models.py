@@ -22,5 +22,6 @@ class CapturedContent:
     content_markdown: str
     content_type: ContentType = ContentType.ARTICLE
     author: str | None = None
+    sender_email: str | None = None
     captured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     tags: list[str] = field(default_factory=list)

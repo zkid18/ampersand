@@ -7,6 +7,7 @@ name = "ampersand"
 version = "0.1.0"
 description = "Open-source capture layer that turns anything from the web into markdown files you own."
 requires-python = ">=3.10"
+readme = "README.md"
 license = "MIT"
 dependencies = [
     "typer>=0.9",
@@ -14,8 +15,10 @@ dependencies = [
     "trafilatura>=1.8",
     "yt-dlp>=2024.1",
     "markdownify>=0.13",
+    "beautifulsoup4>=4.12",
     "pyyaml>=6.0",
     "feedparser>=6.0",
+    "playwright>=1.40",
 ]
 
 [project.optional-dependencies]
