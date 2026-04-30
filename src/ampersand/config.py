@@ -86,3 +86,39 @@ def load_email_config(state_dir: Path = DEFAULT_STATE_DIR) -> dict | None:
     """Load IMAP connection settings."""
     config = load_config(state_dir)
     return config.get("imap") or None
+
+
+# ── Vault backend config ────────────────────────────────────────────
+
+
+def load_backend_config(state_dir: Path = DEFAULT_STATE_DIR) -> dict | None:
+    """Load the `[vault.backend]` config section.
+
+    Shape:
+        {"kind": "http", "http": {"url": "...", "api_key_env": "..."}}
+        {"kind": "store", "store": {"path": "/var/lib/ampersand/vault"}}
+
+    Returns None if not configured (caller should fall back to legacy
+    save_markdown / commit_file path or raise an error).
+    """
+    config = load_config(state_dir)
+    return config.get("vault", {}).get("backend") or None
+
+
+def save_backend_config(
+    backend_config: dict, state_dir: Path = DEFAULT_STATE_DIR
+) -> None:
+    """Persist the `[vault.backend]` config section."""
+    config = load_config(state_dir)
+    config.setdefault("vault", {})["backend"] = backend_config
+    save_config(config, state_dir)
+
+
+def clear_backend_config(state_dir: Path = DEFAULT_STATE_DIR) -> None:
+    """Remove the `[vault.backend]` section so capture flows fall back."""
+    config = load_config(state_dir)
+    if "vault" in config and "backend" in config["vault"]:
+        del config["vault"]["backend"]
+        if not config["vault"]:
+            del config["vault"]
+        save_config(config, state_dir)
