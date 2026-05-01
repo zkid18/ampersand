@@ -7,12 +7,16 @@ from pathlib import Path
 
 import typer
 
+from ampersand_core.converter import to_markdown
+from ampersand_core.email_parser import parse_eml_file
+from ampersand_core.extractor import extract_article, is_linkedin_url, is_youtube_url
+from ampersand_core.feed import parse_feed
+from ampersand_core.imap import fetch_unseen, watch
+from ampersand_core.newsletter_filter import get_sender_email, is_newsletter
+from ampersand_core.youtube import extract_youtube
+
 from ampersand import __version__
 from ampersand.backend_bridge import content_to_backend_args, get_backend
-from ampersand.converter import save_markdown, to_markdown
-from ampersand.email_parser import parse_eml_file
-from ampersand.extractor import extract_article, is_youtube_url
-from ampersand.feed import parse_feed
 from ampersand.config import (
     clear_backend_config,
     load_backend_config,
@@ -22,12 +26,9 @@ from ampersand.config import (
     save_email_config,
     set_value,
 )
-from ampersand.imap import fetch_unseen, watch
 from ampersand.log_setup import setup_logging
-from ampersand.newsletter_filter import get_sender_email, is_newsletter
 from ampersand.state import AppState
 from ampersand.vault import VaultError, commit_file, has_remote, init_vault, is_vault, sync
-from ampersand.youtube import extract_youtube
 
 app = typer.Typer(
     name="ampersand",
@@ -41,7 +42,9 @@ app.add_typer(feed_app, name="feed")
 email_app = typer.Typer(help="Capture newsletters via email.")
 app.add_typer(email_app, name="email")
 
-vault_app = typer.Typer(help="Manage Git-backed vault for collaborative storage.")
+vault_app = typer.Typer(
+    help="Configure where the CLI writes (vault backend) and manage the optional git layer."
+)
 app.add_typer(vault_app, name="vault")
 
 config_app = typer.Typer(help="View and update Ampersand configuration.")
@@ -82,93 +85,51 @@ def _capture_url(url: str):
         return extract_article(url)
 
 
-def _resolve_output(output: Path) -> tuple[Path, Path | None]:
-    """Return (output_dir, vault_path_or_none).
+def _save(content, *, quiet: bool = False) -> bool:
+    """POST a CapturedContent to the configured vault backend.
 
-    If the user didn't override --output (still "."), use the configured vault.
-    """
-    state = AppState()
-    vault = state.get_vault()
-    vault_path = Path(vault["path"]) if vault else None
-
-    if vault_path and output == Path("."):
-        return vault_path, vault_path
-    if vault_path and output.resolve().is_relative_to(vault_path.resolve()):
-        return output, vault_path
-    return output, None
-
-
-def _try_commit(vault_path: Path | None, filepath: Path) -> None:
-    """Commit a file to the vault, logging errors without crashing."""
-    if vault_path is None:
-        return
-    try:
-        commit_file(vault_path, filepath)
-    except VaultError as exc:
-        typer.echo(f"Warning: git commit failed: {exc}", err=True)
-
-
-def _save_via_backend_or_legacy(
-    content,
-    output: Path,
-    *,
-    state: AppState | None = None,
-    quiet: bool = False,
-) -> bool:
-    """Route a CapturedContent to the configured backend, or fall back to local.
-
-    Returns True iff the doc was saved (anywhere). When a backend is configured,
-    --output is ignored (the backend decides the destination).
+    Errors out if no backend is configured — the CLI is HTTP-first now,
+    no silent local-folder fallback. Run `ampersand vault backend set-http
+    <url> --api-key-env KEY` (or `set-store <path>`) once to configure.
     """
     backend = get_backend()
-    if backend is not None:
-        body, fm = content_to_backend_args(content)
-        try:
-            doc = backend.create(body, fm)
-        except Exception as exc:  # noqa: BLE001
-            typer.echo(f"  Error: backend create failed: {exc}", err=True)
-            return False
-        finally:
-            try:
-                backend.close()
-            except Exception:  # noqa: BLE001
-                pass
-        if not quiet:
-            label = doc.get("title") or content.title
-            typer.echo(f"  Saved (remote): {doc.get('id')} — {label}", err=True)
-        return True
+    if backend is None:
+        typer.echo(
+            "Error: no vault backend configured. Run one of:\n"
+            "  ampersand vault backend set-http <url> --api-key-env AMPERSAND_API_KEY\n"
+            "  ampersand vault backend set-store <path>",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
-    # Legacy local path
-    output_dir, vault_path = _resolve_output(output)
-    filepath = save_markdown(content, output_dir)
+    body, fm = content_to_backend_args(content)
+    try:
+        doc = backend.create(body, fm)
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"  Error: backend create failed: {exc}", err=True)
+        return False
+    finally:
+        try:
+            backend.close()
+        except Exception:  # noqa: BLE001
+            pass
+
     if not quiet:
-        typer.echo(f"  Saved: {filepath}", err=True)
-    _try_commit(vault_path, filepath)
+        label = doc.get("title") or content.title
+        typer.echo(f"  Saved: {doc.get('id')} — {label}", err=True)
     return True
 
 
 @app.command()
 def capture(
     url: str = typer.Argument(help="URL to capture."),
-    output: Path = typer.Option(
-        Path("."),
-        "--output",
-        "-o",
-        help="Output directory for the .md file.",
-    ),
-    filename: str | None = typer.Option(
-        None,
-        "--filename",
-        "-f",
-        help="Custom filename (without extension).",
-    ),
     stdout: bool = typer.Option(
         False,
         "--stdout",
-        help="Print markdown to stdout instead of saving a file.",
+        help="Print markdown to stdout instead of saving to the vault.",
     ),
 ) -> None:
-    """Capture a URL and save it as a markdown file."""
+    """Capture a URL and save it to the configured vault."""
     try:
         content = _capture_url(url)
     except Exception as e:
@@ -178,14 +139,7 @@ def capture(
     if stdout:
         typer.echo(to_markdown(content))
     else:
-        # When a backend is configured, --output and --filename are ignored.
-        if get_backend() is not None or filename is None:
-            _save_via_backend_or_legacy(content, output)
-        else:
-            output_dir, vault_path = _resolve_output(output)
-            filepath = save_markdown(content, output_dir, filename)
-            typer.echo(f"Saved: {filepath}", err=True)
-            _try_commit(vault_path, filepath)
+        _save(content)
 
 
 # ── Feed commands ─────────────────────────────────────────────────────
@@ -248,12 +202,6 @@ def feed_list() -> None:
 
 @feed_app.command("sync")
 def feed_sync(
-    output: Path = typer.Option(
-        Path("."),
-        "--output",
-        "-o",
-        help="Output directory for captured .md files.",
-    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -271,8 +219,7 @@ def feed_sync(
         help="Sync only this specific feed URL.",
     ),
 ) -> None:
-    """Sync all subscribed feeds and capture new items."""
-    output_dir, vault_path = _resolve_output(output)
+    """Sync all subscribed feeds and capture new items to the configured vault."""
     state = AppState()
     feeds = state.list_feeds()
 
@@ -318,7 +265,7 @@ def feed_sync(
                 # Use feed entry metadata as fallback
                 if entry.author and not content.author:
                     content.author = entry.author
-                if _save_via_backend_or_legacy(content, output_dir):
+                if _save(content, quiet=False):
                     state.mark_captured(entry.url)
                     total_captured += 1
             except Exception as e:
@@ -409,21 +356,13 @@ def email_senders() -> None:
 
 
 @email_app.command("sync")
-def email_sync(
-    output: Path = typer.Option(
-        Path("."),
-        "--output",
-        "-o",
-        help="Output directory for captured .md files.",
-    ),
-) -> None:
-    """Fetch and capture all unread newsletters from configured mailbox."""
+def email_sync() -> None:
+    """Fetch and capture all unread newsletters to the configured vault."""
     config = load_email_config()
     if not config:
         typer.echo("No email configured. Run 'ampersand email setup' first.", err=True)
         raise typer.Exit(code=1)
 
-    output_dir, vault_path = _resolve_output(output)
     state = AppState()
     typer.echo("Checking for new emails...", err=True)
 
@@ -432,7 +371,7 @@ def email_sync(
         for uid, content in fetch_unseen(config, email_filter=_make_email_filter(state)):
             if state.is_captured(content.url):
                 continue
-            if _save_via_backend_or_legacy(content, output_dir, state=state, quiet=True):
+            if _save(content, quiet=True):
                 state.mark_captured(content.url)
                 captured += 1
                 typer.echo(f"  [{captured}] {content.title}", err=True)
@@ -449,12 +388,6 @@ def email_sync(
 
 @email_app.command("watch")
 def email_watch(
-    output: Path = typer.Option(
-        Path("."),
-        "--output",
-        "-o",
-        help="Output directory for captured .md files.",
-    ),
     poll_interval: int = typer.Option(
         30,
         "--interval",
@@ -467,14 +400,13 @@ def email_watch(
         typer.echo("No email configured. Run 'ampersand email setup' first.", err=True)
         raise typer.Exit(code=1)
 
-    output_dir, vault_path = _resolve_output(output)
     state = AppState()
     typer.echo(f"Watching {config['email']} for new emails... (Ctrl+C to stop)", err=True)
 
     def on_email(content):
         if state.is_captured(content.url):
             return
-        if _save_via_backend_or_legacy(content, output_dir):
+        if _save(content):
             state.mark_captured(content.url)
 
     try:
@@ -491,19 +423,13 @@ def email_watch(
 @email_app.command("parse")
 def email_parse(
     file: Path = typer.Argument(help="Path to .eml file."),
-    output: Path = typer.Option(
-        Path("."),
-        "--output",
-        "-o",
-        help="Output directory for the .md file.",
-    ),
     stdout: bool = typer.Option(
         False,
         "--stdout",
-        help="Print markdown to stdout instead of saving a file.",
+        help="Print markdown to stdout instead of saving to the vault.",
     ),
 ) -> None:
-    """Parse a local .eml file into markdown."""
+    """Parse a local .eml file into the configured vault."""
     if not file.exists():
         typer.echo(f"File not found: {file}", err=True)
         raise typer.Exit(code=1)
@@ -517,7 +443,7 @@ def email_parse(
     if stdout:
         typer.echo(to_markdown(content))
     else:
-        _save_via_backend_or_legacy(content, output)
+        _save(content)
 
 
 # ── Config commands ──────────────────────────────────────────────────
@@ -696,6 +622,9 @@ def backend_set_store(
 
 @backend_app.command("clear")
 def backend_clear() -> None:
-    """Remove backend config — capture flows revert to legacy local writes."""
+    """Remove backend config. Capture flows will refuse to run until reconfigured."""
     clear_backend_config()
-    typer.echo("Backend cleared. Captures use the legacy local-folder path again.")
+    typer.echo(
+        "Backend cleared. Capture flows will error out until a backend is set "
+        "again with `ampersand vault backend set-http|set-store ...`."
+    )

@@ -15,9 +15,9 @@ from ampersand_core.backend import (
     VaultBackend,
     build_backend,
 )
+from ampersand_core.models import CapturedContent
 
 from ampersand.config import load_backend_config
-from ampersand.models import CapturedContent
 
 
 def get_backend() -> VaultBackend | None:
@@ -44,11 +44,14 @@ def content_to_backend_args(
     if not body_md.endswith("\n"):
         body_md += "\n"
 
+    # Serialize captured_at to ISO string — HTTPBackend's json= path can't
+    # handle a raw datetime, and the store now accepts both datetime and ISO.
+    captured_iso = content.captured_at.strftime("%Y-%m-%dT%H:%M:%SZ")
     frontmatter: dict[str, Any] = {
         "title": content.title,
         "source": content.url,
         "type": content.content_type.value,
-        "captured_at": content.captured_at,
+        "captured_at": captured_iso,
         "tags": list(content.tags),
     }
     if content.author:
