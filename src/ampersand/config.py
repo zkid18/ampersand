@@ -83,9 +83,86 @@ def save_email_config(
 
 
 def load_email_config(state_dir: Path = DEFAULT_STATE_DIR) -> dict | None:
-    """Load IMAP connection settings."""
+    """Load IMAP connection settings (legacy single-account shape).
+
+    Prefer `load_email_accounts()` which returns the full list. This is kept
+    for callers that still expect a single dict — it returns the first
+    configured account, or None.
+    """
+    accounts = load_email_accounts(state_dir)
+    return accounts[0] if accounts else None
+
+
+def load_email_accounts(state_dir: Path = DEFAULT_STATE_DIR) -> list[dict]:
+    """Return every configured IMAP account.
+
+    Reads `imap_accounts: [...]`. Auto-promotes the legacy single-account
+    `imap: {...}` block to a one-item list so old configs keep working.
+    """
     config = load_config(state_dir)
-    return config.get("imap") or None
+    accounts = list(config.get("imap_accounts") or [])
+    legacy = config.get("imap")
+    if legacy and not any(a.get("email") == legacy.get("email") for a in accounts):
+        legacy = dict(legacy)
+        legacy.setdefault("name", legacy.get("email", "primary"))
+        accounts.append(legacy)
+    return accounts
+
+
+def add_email_account(
+    server: str,
+    email_addr: str,
+    password: str,
+    port: int = 993,
+    mailbox: str = "INBOX",
+    name: str | None = None,
+    state_dir: Path = DEFAULT_STATE_DIR,
+) -> None:
+    """Append a new IMAP account or replace an existing one with the same email.
+
+    Migrates the legacy `imap: {...}` single-account block into
+    `imap_accounts: [...]` on first call so the two shapes don't coexist.
+    """
+    account = {
+        "name": name or email_addr,
+        "server": server,
+        "port": port,
+        "email": email_addr,
+        "password": password,
+        "mailbox": mailbox,
+    }
+    config = load_config(state_dir)
+    accounts = list(config.get("imap_accounts") or [])
+    # Pull the legacy single-account block forward so we don't lose it.
+    legacy = config.get("imap")
+    if legacy and not any(a.get("email") == legacy.get("email") for a in accounts):
+        legacy = dict(legacy)
+        legacy.setdefault("name", legacy.get("email", "primary"))
+        accounts.append(legacy)
+    # Replace by email if it already exists.
+    accounts = [a for a in accounts if a.get("email") != email_addr]
+    accounts.append(account)
+    config["imap_accounts"] = accounts
+    config.pop("imap", None)
+    save_config(config, state_dir)
+
+
+def remove_email_account(email_addr: str, state_dir: Path = DEFAULT_STATE_DIR) -> bool:
+    """Drop an IMAP account by email address. Returns True if removed."""
+    config = load_config(state_dir)
+    accounts = list(config.get("imap_accounts") or [])
+    legacy = config.get("imap")
+    if legacy and not any(a.get("email") == legacy.get("email") for a in accounts):
+        legacy = dict(legacy)
+        legacy.setdefault("name", legacy.get("email", "primary"))
+        accounts.append(legacy)
+    new_accounts = [a for a in accounts if a.get("email") != email_addr]
+    if len(new_accounts) == len(accounts):
+        return False
+    config["imap_accounts"] = new_accounts
+    config.pop("imap", None)
+    save_config(config, state_dir)
+    return True
 
 
 # ── Vault backend config ────────────────────────────────────────────

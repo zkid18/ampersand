@@ -18,10 +18,13 @@ from ampersand_core.youtube import extract_youtube
 from ampersand import __version__
 from ampersand.backend_bridge import content_to_backend_args, get_backend
 from ampersand.config import (
+    add_email_account,
     clear_backend_config,
     load_backend_config,
     load_config,
+    load_email_accounts,
     load_email_config,
+    remove_email_account,
     save_backend_config,
     save_email_config,
     set_value,
@@ -285,22 +288,61 @@ def email_setup(
     password: str = typer.Option(..., "--password", "-p", prompt="Password (app password for Gmail)", hide_input=True),
     port: int = typer.Option(993, "--port", help="IMAP port."),
     mailbox: str = typer.Option("INBOX", "--mailbox", help="Mailbox to monitor."),
+    name: str | None = typer.Option(None, "--name", help="Friendly label for logs (defaults to the email)."),
 ) -> None:
-    """Configure IMAP email account for newsletter capture."""
-    save_email_config(
+    """Add an IMAP email account for newsletter capture.
+
+    Multiple accounts can coexist — call setup once per inbox. Passing an
+    email that already exists replaces that account's credentials.
+    """
+    add_email_account(
         server=server,
         email_addr=email_addr,
         password=password,
         port=port,
         mailbox=mailbox,
+        name=name,
     )
-    typer.echo(f"Email configured: {email_addr} on {server}")
-    typer.echo("Run 'ampersand email sync' to fetch newsletters, or 'ampersand email watch' for real-time.")
+    typer.echo(f"Account added: {email_addr} ({server})")
+    total = len(load_email_accounts())
+    typer.echo(f"Configured accounts: {total}. Run 'ampersand email sync' or 'ampersand email watch'.")
 
 
-def _make_email_filter(state: AppState):
-    """Build a filter callback that checks allowlist + newsletter heuristics."""
+@email_app.command("list")
+def email_list() -> None:
+    """List configured IMAP accounts."""
+    accounts = load_email_accounts()
+    if not accounts:
+        typer.echo("No accounts configured. Run 'ampersand email setup'.")
+        return
+    for a in accounts:
+        label = a.get("name") or a.get("email")
+        typer.echo(f"  {label}  ({a.get('email')} on {a.get('server')}:{a.get('port')}  mailbox={a.get('mailbox')})")
+
+
+@email_app.command("rm")
+def email_rm(
+    email_addr: str = typer.Argument(help="Email address of the account to remove."),
+) -> None:
+    """Remove an IMAP account from the config."""
+    if remove_email_account(email_addr):
+        typer.echo(f"Removed: {email_addr}")
+    else:
+        typer.echo(f"Not configured: {email_addr}", err=True)
+        raise typer.Exit(code=1)
+
+
+def _make_email_filter(state: AppState, state_lock=None):
+    """Build a filter callback that checks allowlist + newsletter heuristics.
+
+    `state_lock` is optional — pass one (threading.Lock) when running
+    multiple accounts in parallel so the auto-grown allowlist doesn't
+    race on the underlying JSON state file.
+    """
+    from contextlib import nullcontext
     from email.message import EmailMessage
+
+    guard = state_lock if state_lock is not None else nullcontext()
 
     def email_filter(msg: EmailMessage) -> bool:
         try:
@@ -308,12 +350,13 @@ def _make_email_filter(state: AppState):
         except Exception:
             # Can't parse sender — capture aggressively rather than skip
             return True
-        if state.is_sender_allowed(sender):
-            return True
-        if is_newsletter(msg):
-            # Auto-add sender so the allowlist grows over time
-            state.add_sender(sender)
-            return True
+        with guard:
+            if state.is_sender_allowed(sender):
+                return True
+            if is_newsletter(msg):
+                # Auto-add sender so the allowlist grows over time
+                state.add_sender(sender)
+                return True
         typer.echo(f"Skipped: {sender} (not detected as newsletter)", err=True)
         return False
 
@@ -357,33 +400,58 @@ def email_senders() -> None:
 
 @email_app.command("sync")
 def email_sync() -> None:
-    """Fetch and capture all unread newsletters to the configured vault."""
-    config = load_email_config()
-    if not config:
-        typer.echo("No email configured. Run 'ampersand email setup' first.", err=True)
+    """Fetch and capture unread newsletters across every configured IMAP account.
+
+    Each account runs in its own thread — N inboxes fetch in parallel.
+    State writes (allowlist, captured-URL set) are serialized by a shared
+    lock so the per-account workers can't race on the JSON state file.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    accounts = load_email_accounts()
+    if not accounts:
+        typer.echo("No email accounts configured. Run 'ampersand email setup' first.", err=True)
         raise typer.Exit(code=1)
 
     state = AppState()
-    typer.echo("Checking for new emails...", err=True)
+    state_lock = threading.Lock()
+    typer.echo(f"Checking {len(accounts)} account(s) for new emails...", err=True)
 
-    captured = 0
-    try:
-        for uid, content in fetch_unseen(config, email_filter=_make_email_filter(state)):
-            if state.is_captured(content.url):
-                continue
-            if _save(content, quiet=True):
-                state.mark_captured(content.url)
-                captured += 1
-                typer.echo(f"  [{captured}] {content.title}", err=True)
-    except Exception as e:
-        typer.echo(f"Error during email sync: {e}", err=True)
-        if captured == 0:
-            raise typer.Exit(code=1)
+    def _run_one(account: dict) -> tuple[str, int, str | None]:
+        label = account.get("name") or account.get("email") or "imap"
+        captured = 0
+        try:
+            for uid, content in fetch_unseen(account, email_filter=_make_email_filter(state, state_lock)):
+                with state_lock:
+                    if state.is_captured(content.url):
+                        continue
+                if _save(content, quiet=True):
+                    with state_lock:
+                        state.mark_captured(content.url)
+                    captured += 1
+                    typer.echo(f"  [{label}] [{captured}] {content.title}", err=True)
+        except Exception as exc:  # noqa: BLE001
+            return label, captured, str(exc)
+        return label, captured, None
 
-    if captured == 0:
+    total = 0
+    errors: list[tuple[str, str]] = []
+    with ThreadPoolExecutor(max_workers=max(len(accounts), 1)) as pool:
+        futures = [pool.submit(_run_one, a) for a in accounts]
+        for fut in as_completed(futures):
+            label, captured, err = fut.result()
+            total += captured
+            if err:
+                errors.append((label, err))
+                typer.echo(f"  [{label}] error: {err}", err=True)
+
+    if errors and total == 0:
+        raise typer.Exit(code=1)
+    if total == 0:
         typer.echo("No new emails.", err=True)
     else:
-        typer.echo(f"Done: captured {captured} newsletter(s).", err=True)
+        typer.echo(f"Done: captured {total} newsletter(s) across {len(accounts)} account(s).", err=True)
 
 
 @email_app.command("watch")
@@ -394,28 +462,59 @@ def email_watch(
         help="Poll interval in seconds (used when IDLE is not supported).",
     ),
 ) -> None:
-    """Watch mailbox for new newsletters in real-time (IMAP IDLE)."""
-    config = load_email_config()
-    if not config:
-        typer.echo("No email configured. Run 'ampersand email setup' first.", err=True)
+    """Watch every configured mailbox in real-time (IMAP IDLE, one thread per account).
+
+    Spawns N daemon threads — one per configured account — that each run
+    the reconnect-forever IDLE/poll loop. Ctrl+C interrupts the main
+    thread and the daemons die on process exit. State mutations are
+    serialized by a shared lock.
+    """
+    import threading
+
+    accounts = load_email_accounts()
+    if not accounts:
+        typer.echo("No email accounts configured. Run 'ampersand email setup' first.", err=True)
         raise typer.Exit(code=1)
 
     state = AppState()
-    typer.echo(f"Watching {config['email']} for new emails... (Ctrl+C to stop)", err=True)
+    state_lock = threading.Lock()
+    labels = [a.get("name") or a.get("email") for a in accounts]
+    typer.echo(f"Watching {len(accounts)} account(s): {', '.join(labels)} (Ctrl+C to stop)", err=True)
 
-    def on_email(content):
-        if state.is_captured(content.url):
-            return
-        if _save(content):
-            state.mark_captured(content.url)
+    def _make_on_email(label: str):
+        def on_email(content):
+            with state_lock:
+                if state.is_captured(content.url):
+                    return
+            if _save(content):
+                with state_lock:
+                    state.mark_captured(content.url)
+                typer.echo(f"  [{label}] {content.title}", err=True)
+        return on_email
+
+    def _run_account(account: dict):
+        label = account.get("name") or account.get("email")
+        try:
+            watch(
+                account,
+                on_email=_make_on_email(label),
+                poll_interval=poll_interval,
+                email_filter=_make_email_filter(state, state_lock),
+            )
+        except Exception as exc:  # noqa: BLE001
+            typer.echo(f"  [{label}] watch crashed: {exc}", err=True)
+
+    threads: list[threading.Thread] = []
+    for account in accounts:
+        t = threading.Thread(target=_run_account, args=(account,), daemon=True)
+        t.start()
+        threads.append(t)
 
     try:
-        watch(
-            config,
-            on_email=on_email,
-            poll_interval=poll_interval,
-            email_filter=_make_email_filter(state),
-        )
+        # Hold the main thread; daemons run forever, Ctrl+C kills them.
+        while any(t.is_alive() for t in threads):
+            for t in threads:
+                t.join(timeout=1.0)
     except KeyboardInterrupt:
         typer.echo("\nStopped watching.", err=True)
 
