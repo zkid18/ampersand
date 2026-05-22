@@ -335,9 +335,21 @@ def email_rm(
 def _make_email_filter(state: AppState, state_lock=None):
     """Build a filter callback that checks allowlist + newsletter heuristics.
 
+    Two-tier admission:
+      1. Sender is on the explicit allowlist (added via `ampersand email
+         allow <sender>`) → capture.
+      2. Otherwise, run the conservative `is_newsletter` heuristic. If it
+         passes, capture THIS email but do not learn the sender. The
+         user has to explicitly allow them if they want every future
+         email from that address.
+
+    The old behavior auto-added any first-time pass into the allowlist,
+    which grew uncontrollably: one false positive from a Brazilian real-
+    estate mailer meant every listing from them captured forever. The
+    allowlist is now a deliberate-action set, not a passive log.
+
     `state_lock` is optional — pass one (threading.Lock) when running
-    multiple accounts in parallel so the auto-grown allowlist doesn't
-    race on the underlying JSON state file.
+    multiple accounts in parallel so the state file doesn't race.
     """
     from contextlib import nullcontext
     from email.message import EmailMessage
@@ -353,10 +365,10 @@ def _make_email_filter(state: AppState, state_lock=None):
         with guard:
             if state.is_sender_allowed(sender):
                 return True
-            if is_newsletter(msg):
-                # Auto-add sender so the allowlist grows over time
-                state.add_sender(sender)
-                return True
+        if is_newsletter(msg):
+            # Pass this email through, but do NOT auto-add the sender.
+            # Whitelisting is now an explicit action via `email allow`.
+            return True
         typer.echo(f"Skipped: {sender} (not detected as newsletter)", err=True)
         return False
 
