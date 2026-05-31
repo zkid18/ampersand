@@ -1,6 +1,10 @@
 # Configuration with credentials
 config.yaml
 
+# Per-user state — never commit (sender allowlist, captured-set, vault pointer)
+.ampersand/
+state.json
+
 # Output files
 yahoo_export/
 *.jsonl
