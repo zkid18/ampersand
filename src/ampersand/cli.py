@@ -148,6 +148,23 @@ def capture(
 # ── Feed commands ─────────────────────────────────────────────────────
 
 
+# ── Server-vs-local feed routing ────────────────────────────────────
+#
+# When the CLI is configured against a remote server (HTTPBackend), feed
+# commands hit the server's /feeds endpoints — the laptop's `feed add`
+# finally reaches the droplet that runs the sync timer (Self-hoster S2/S4
+# friction inventory item). When no backend is configured, fall back to
+# the legacy AppState.state.json path for offline / single-machine setups.
+
+
+def _remote_backend():
+    """Return the HTTPBackend instance if configured remotely, else None."""
+    from ampersand_core.backend.http_backend import HTTPBackend
+
+    backend = get_backend()
+    return backend if isinstance(backend, HTTPBackend) else None
+
+
 @feed_app.command("add")
 def feed_add(
     url: str = typer.Argument(help="RSS/Atom feed URL."),
@@ -155,13 +172,26 @@ def feed_add(
     tags: list[str] = typer.Option([], "--tag", "-t", help="Tags for this feed (repeatable)."),
 ) -> None:
     """Subscribe to an RSS/Atom feed."""
-    state = AppState()
+    remote = _remote_backend()
+    if remote is not None:
+        # Server is the source of truth. POST /feeds/register is idempotent on
+        # URL — re-adding merges tags rather than failing, so we don't need a
+        # local pre-check.
+        try:
+            row = remote.feeds_register(url, name=name, tags=tags)
+        except Exception as e:  # noqa: BLE001
+            typer.echo(f"Error registering feed: {e}", err=True)
+            raise typer.Exit(code=1)
+        feed_name = row.get("name") or url
+        typer.echo(f"Subscribed (server): {feed_name}")
+        return
 
+    # Local fallback for offline / single-machine setups.
+    state = AppState()
     if state.get_feed(url):
         typer.echo(f"Already subscribed: {url}", err=True)
         raise typer.Exit(code=1)
 
-    # Fetch feed to validate and get title
     try:
         info = parse_feed(url)
     except Exception as e:
@@ -179,6 +209,26 @@ def feed_remove(
     url: str = typer.Argument(help="Feed URL to unsubscribe from."),
 ) -> None:
     """Unsubscribe from a feed."""
+    remote = _remote_backend()
+    if remote is not None:
+        # Server identifies feeds by id; translate URL → id by listing.
+        try:
+            items = remote.feeds_list()
+        except Exception as e:  # noqa: BLE001
+            typer.echo(f"Error listing feeds on server: {e}", err=True)
+            raise typer.Exit(code=1)
+        match = next((it for it in items if it.get("url") == url), None)
+        if match is None:
+            typer.echo(f"Not subscribed: {url}", err=True)
+            raise typer.Exit(code=1)
+        try:
+            remote.feeds_remove(match["id"])
+        except Exception as e:  # noqa: BLE001
+            typer.echo(f"Error removing feed: {e}", err=True)
+            raise typer.Exit(code=1)
+        typer.echo(f"Removed (server): {url}")
+        return
+
     state = AppState()
     if state.remove_feed(url):
         typer.echo(f"Removed: {url}")
@@ -190,6 +240,25 @@ def feed_remove(
 @feed_app.command("list")
 def feed_list() -> None:
     """List all subscribed feeds."""
+    remote = _remote_backend()
+    if remote is not None:
+        try:
+            items = remote.feeds_list()
+        except Exception as e:  # noqa: BLE001
+            typer.echo(f"Error listing feeds: {e}", err=True)
+            raise typer.Exit(code=1)
+        if not items:
+            typer.echo("No feeds subscribed. Use 'ampersand feed add <url>' to add one.")
+            return
+        for it in items:
+            tags_str = f"  [{', '.join(it.get('tags') or [])}]" if it.get("tags") else ""
+            disabled_marker = "" if it.get("enabled", True) else "  (disabled)"
+            typer.echo(f"  {it.get('name') or it['url']}{tags_str}{disabled_marker}")
+            typer.echo(f"    {it['url']}")
+            if it.get("last_sync_at"):
+                typer.echo(f"    last sync: {it['last_sync_at']} ({it.get('last_status') or '?'})")
+        return
+
     state = AppState()
     feeds = state.list_feeds()
 
@@ -223,6 +292,44 @@ def feed_sync(
     ),
 ) -> None:
     """Sync all subscribed feeds and capture new items to the configured vault."""
+    remote = _remote_backend()
+    if remote is not None:
+        if dry_run or limit > 0 or feed_url:
+            typer.echo(
+                "Note: --dry-run, --limit, and --feed aren't yet supported on "
+                "remote sync. The server iterates every enabled feed with its "
+                "default limit. Run the older local sync (no AMPERSAND_BASE_URL) "
+                "if you need these flags.",
+                err=True,
+            )
+        try:
+            # Server-side sync can take minutes when many entries are new —
+            # set a generous timeout.
+            result = remote.feeds_sync(timeout=600.0)
+        except Exception as e:  # noqa: BLE001
+            typer.echo(f"Error syncing on server: {e}", err=True)
+            raise typer.Exit(code=1)
+        total_captured = 0
+        total_skipped = 0
+        total_failed = 0
+        for r in result.get("results") or []:
+            name = r.get("name") or r.get("url")
+            typer.echo(
+                f"  {name}: captured={r.get('captured', 0)} "
+                f"skipped={r.get('skipped', 0)} failed={r.get('failed', 0)} "
+                f"status={r.get('status')}",
+                err=True,
+            )
+            total_captured += r.get("captured", 0)
+            total_skipped += r.get("skipped", 0)
+            total_failed += r.get("failed", 0)
+        typer.echo(
+            f"\nDone (server): captured {total_captured}, skipped {total_skipped}, "
+            f"failed {total_failed} across {result.get('total_feeds', 0)} feeds.",
+            err=True,
+        )
+        return
+
     state = AppState()
     feeds = state.list_feeds()
 
