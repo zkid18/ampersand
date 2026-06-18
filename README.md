@@ -1,6 +1,6 @@
-# Ampersand
+# Amperstand
 
-Ampersand captures articles, YouTube videos, feeds, and newsletters into markdown files you own.
+Amperstand captures articles, YouTube videos, feeds, and newsletters into markdown files you own.
 
 It is local-first. You can run it on any computer with Python and write output directly into a folder or Obsidian vault. The HTTP server is optional and not required for the core workflow.
 
@@ -8,7 +8,7 @@ It is local-first. You can run it on any computer with Python and write output d
 
 ```bash
 git clone <your-repo-url>
-cd ampersand
+cd amperstand
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -20,19 +20,19 @@ playwright install chromium
 Capture an article:
 
 ```bash
-ampersand capture https://example.com/article
+amperstand capture https://example.com/article
 ```
 
 Print markdown to stdout instead of writing a file:
 
 ```bash
-ampersand capture https://example.com/article --stdout
+amperstand capture https://example.com/article --stdout
 ```
 
 Capture into a specific folder:
 
 ```bash
-ampersand capture https://example.com/article --output ~/notes/inbox
+amperstand capture https://example.com/article --output ~/notes/inbox
 ```
 
 ## What It Supports
@@ -45,22 +45,22 @@ ampersand capture https://example.com/article --output ~/notes/inbox
 ## Common Commands
 
 ```bash
-ampersand feed add https://example.com/feed.xml
-ampersand feed sync --output ~/notes/inbox
+amperstand feed add https://example.com/feed.xml
+amperstand feed sync --output ~/notes/inbox
 
-ampersand email parse ./newsletter.eml --output ~/notes/inbox
+amperstand email parse ./newsletter.eml --output ~/notes/inbox
 
-ampersand config show
-ampersand --version
+amperstand config show
+amperstand --version
 ```
 
 ## Local State
 
-Ampersand stores local state in `~/.ampersand`, including:
+Amperstand stores local state in `~/.amperstand`, including:
 
 - `state.json` for feed subscriptions and capture history
 - `config.json` for settings
-- `ampersand.log` for logs
+- `amperstand.log` for logs
 
 ## Notes
 

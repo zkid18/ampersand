@@ -1,7 +1,7 @@
 # Server Architecture — Blockers & Plan
 
 ## Context
-Ampersand currently runs as a CLI. We want to wrap it in a server to accept captures from multiple mediums: Telegram bot, browser extension, API, etc.
+Amperstand currently runs as a CLI. We want to wrap it in a server to accept captures from multiple mediums: Telegram bot, browser extension, API, etc.
 
 ## Current State: What's Already Good
 - **CLI is a thin wrapper** — no core module imports typer. FastAPI can call the same functions directly.
@@ -28,7 +28,7 @@ Client B: mark_captured(url4) -> writes [url1, url2, url4]  <- url3 lost
 - **`trafilatura.fetch_url()`** (`extractor.py`) — synchronous HTTP, no timeout.
 
 ### Medium: Config/paths default to user home
-`DEFAULT_STATE_DIR = Path.home() / ".ampersand"` works for CLI but not for a multi-tenant server. Server must pass explicit `state_dir` per user/client.
+`DEFAULT_STATE_DIR = Path.home() / ".amperstand"` works for CLI but not for a multi-tenant server. Server must pass explicit `state_dir` per user/client.
 
 ## Sequenced Plan
 1. Replace `state.json` with SQLite (unblocks concurrency)

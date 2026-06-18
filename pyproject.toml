@@ -3,7 +3,17 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ampersand"
+# PyPI distribution name. The bare `amperstand` was taken by an unrelated
+# minimalistic-static-site-generator (Nathan Scott's project, 7 releases).
+# We claim `amperstand` instead — same general &-stand-for-capture
+# connotation, distinct enough to avoid the wrong-package-installed
+# friction Researcher hit in the 2026-06-09 friction test.
+#
+# Python module name stays `amperstand` for now (`import amperstand` in code
+# is unchanged). If we ever do the deeper rename — directory rename, all
+# imports updated — that's a separate, bigger commit. This is the
+# minimum-viable PyPI release.
+name = "amperstand"
 version = "0.1.0"
 description = "Open-source capture layer that turns anything from the web into markdown files you own."
 requires-python = ">=3.10"
@@ -19,7 +29,7 @@ dependencies = [
     "pyyaml>=6.0",
     "feedparser>=6.0",
     "playwright>=1.40",
-    "ampersand-core>=0.1.0",
+    "amperstand-core>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -29,10 +39,10 @@ dev = [
 ]
 
 [project.scripts]
-ampersand = "ampersand.cli:app"
+amperstand = "amperstand.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ampersand"]
+packages = ["src/amperstand"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

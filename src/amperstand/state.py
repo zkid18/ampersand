@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-DEFAULT_STATE_DIR = Path.home() / ".ampersand"
+DEFAULT_STATE_DIR = Path.home() / ".amperstand"
 STATE_FILE = "state.json"
 
 

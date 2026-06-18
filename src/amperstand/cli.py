@@ -1,4 +1,4 @@
-"""CLI entry point for Ampersand."""
+"""CLI entry point for Amperstand."""
 
 from __future__ import annotations
 
@@ -7,17 +7,17 @@ from pathlib import Path
 
 import typer
 
-from ampersand_core.converter import to_markdown
-from ampersand_core.email_parser import parse_eml_file
-from ampersand_core.extractor import extract_article, is_linkedin_url, is_youtube_url
-from ampersand_core.feed import parse_feed
-from ampersand_core.imap import fetch_unseen, watch
-from ampersand_core.newsletter_filter import get_sender_email, is_newsletter
-from ampersand_core.youtube import extract_youtube
+from amperstand_core.converter import to_markdown
+from amperstand_core.email_parser import parse_eml_file
+from amperstand_core.extractor import extract_article, is_linkedin_url, is_youtube_url
+from amperstand_core.feed import parse_feed
+from amperstand_core.imap import fetch_unseen, watch
+from amperstand_core.newsletter_filter import get_sender_email, is_newsletter
+from amperstand_core.youtube import extract_youtube
 
-from ampersand import __version__
-from ampersand.backend_bridge import content_to_backend_args, get_backend
-from ampersand.config import (
+from amperstand import __version__
+from amperstand.backend_bridge import content_to_backend_args, get_backend
+from amperstand.config import (
     add_email_account,
     clear_backend_config,
     load_backend_config,
@@ -29,12 +29,12 @@ from ampersand.config import (
     save_email_config,
     set_value,
 )
-from ampersand.log_setup import setup_logging
-from ampersand.state import AppState
-from ampersand.vault import VaultError, commit_file, has_remote, init_vault, is_vault, sync
+from amperstand.log_setup import setup_logging
+from amperstand.state import AppState
+from amperstand.vault import VaultError, commit_file, has_remote, init_vault, is_vault, sync
 
 app = typer.Typer(
-    name="ampersand",
+    name="amperstand",
     help="Capture anything from the web as markdown you own.",
     add_completion=False,
 )
@@ -50,13 +50,13 @@ vault_app = typer.Typer(
 )
 app.add_typer(vault_app, name="vault")
 
-config_app = typer.Typer(help="View and update Ampersand configuration.")
+config_app = typer.Typer(help="View and update Amperstand configuration.")
 app.add_typer(config_app, name="config")
 
 
 def version_callback(value: bool) -> None:
     if value:
-        typer.echo(f"ampersand {__version__}")
+        typer.echo(f"amperstand {__version__}")
         raise typer.Exit()
 
 
@@ -71,7 +71,7 @@ def main(
         is_eager=True,
     ),
 ) -> None:
-    """Ampersand — capture anything from the web as markdown you own."""
+    """Amperstand — capture anything from the web as markdown you own."""
     setup_logging()
 
 
@@ -92,15 +92,15 @@ def _save(content, *, quiet: bool = False) -> bool:
     """POST a CapturedContent to the configured vault backend.
 
     Errors out if no backend is configured — the CLI is HTTP-first now,
-    no silent local-folder fallback. Run `ampersand vault backend set-http
+    no silent local-folder fallback. Run `amperstand vault backend set-http
     <url> --api-key-env KEY` (or `set-store <path>`) once to configure.
     """
     backend = get_backend()
     if backend is None:
         typer.echo(
             "Error: no vault backend configured. Run one of:\n"
-            "  ampersand vault backend set-http <url> --api-key-env AMPERSAND_API_KEY\n"
-            "  ampersand vault backend set-store <path>",
+            "  amperstand vault backend set-http <url> --api-key-env AMPERSTAND_API_KEY\n"
+            "  amperstand vault backend set-store <path>",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -159,7 +159,7 @@ def capture(
 
 def _remote_backend():
     """Return the HTTPBackend instance if configured remotely, else None."""
-    from ampersand_core.backend.http_backend import HTTPBackend
+    from amperstand_core.backend.http_backend import HTTPBackend
 
     backend = get_backend()
     return backend if isinstance(backend, HTTPBackend) else None
@@ -248,7 +248,7 @@ def feed_list() -> None:
             typer.echo(f"Error listing feeds: {e}", err=True)
             raise typer.Exit(code=1)
         if not items:
-            typer.echo("No feeds subscribed. Use 'ampersand feed add <url>' to add one.")
+            typer.echo("No feeds subscribed. Use 'amperstand feed add <url>' to add one.")
             return
         for it in items:
             tags_str = f"  [{', '.join(it.get('tags') or [])}]" if it.get("tags") else ""
@@ -263,7 +263,7 @@ def feed_list() -> None:
     feeds = state.list_feeds()
 
     if not feeds:
-        typer.echo("No feeds subscribed. Use 'ampersand feed add <url>' to add one.")
+        typer.echo("No feeds subscribed. Use 'amperstand feed add <url>' to add one.")
         return
 
     for url, info in feeds.items():
@@ -298,7 +298,7 @@ def feed_sync(
             typer.echo(
                 "Note: --dry-run, --limit, and --feed aren't yet supported on "
                 "remote sync. The server iterates every enabled feed with its "
-                "default limit. Run the older local sync (no AMPERSAND_BASE_URL) "
+                "default limit. Run the older local sync (no AMPERSTAND_BASE_URL) "
                 "if you need these flags.",
                 err=True,
             )
@@ -340,7 +340,7 @@ def feed_sync(
         feeds = {feed_url: feeds[feed_url]}
 
     if not feeds:
-        typer.echo("No feeds subscribed. Use 'ampersand feed add <url>' to add one.")
+        typer.echo("No feeds subscribed. Use 'amperstand feed add <url>' to add one.")
         return
 
     total_captured = 0
@@ -412,7 +412,7 @@ def email_setup(
     )
     typer.echo(f"Account added: {email_addr} ({server})")
     total = len(load_email_accounts())
-    typer.echo(f"Configured accounts: {total}. Run 'ampersand email sync' or 'ampersand email watch'.")
+    typer.echo(f"Configured accounts: {total}. Run 'amperstand email sync' or 'amperstand email watch'.")
 
 
 @email_app.command("list")
@@ -420,7 +420,7 @@ def email_list() -> None:
     """List configured IMAP accounts."""
     accounts = load_email_accounts()
     if not accounts:
-        typer.echo("No accounts configured. Run 'ampersand email setup'.")
+        typer.echo("No accounts configured. Run 'amperstand email setup'.")
         return
     for a in accounts:
         label = a.get("name") or a.get("email")
@@ -443,7 +443,7 @@ def _make_email_filter(state: AppState, state_lock=None):
     """Build a filter callback that checks allowlist + newsletter heuristics.
 
     Two-tier admission:
-      1. Sender is on the explicit allowlist (added via `ampersand email
+      1. Sender is on the explicit allowlist (added via `amperstand email
          allow <sender>`) → capture.
       2. Otherwise, run the conservative `is_newsletter` heuristic. If it
          passes, capture THIS email but do not learn the sender. The
@@ -511,7 +511,7 @@ def email_senders() -> None:
     state = AppState()
     senders = state.list_senders()
     if not senders:
-        typer.echo("No senders in allowlist. Use 'ampersand email allow <sender>' to add one.")
+        typer.echo("No senders in allowlist. Use 'amperstand email allow <sender>' to add one.")
         return
     for s in senders:
         typer.echo(f"  {s}")
@@ -530,7 +530,7 @@ def email_sync() -> None:
 
     accounts = load_email_accounts()
     if not accounts:
-        typer.echo("No email accounts configured. Run 'ampersand email setup' first.", err=True)
+        typer.echo("No email accounts configured. Run 'amperstand email setup' first.", err=True)
         raise typer.Exit(code=1)
 
     state = AppState()
@@ -592,7 +592,7 @@ def email_watch(
 
     accounts = load_email_accounts()
     if not accounts:
-        typer.echo("No email accounts configured. Run 'ampersand email setup' first.", err=True)
+        typer.echo("No email accounts configured. Run 'amperstand email setup' first.", err=True)
         raise typer.Exit(code=1)
 
     state = AppState()
@@ -681,7 +681,7 @@ def config_set(
     key: str = typer.Argument(help="Dotted config key (e.g. logging.level)."),
     value: str = typer.Argument(help="Value to set."),
 ) -> None:
-    """Set a configuration value (e.g. ampersand config set logging.level DEBUG)."""
+    """Set a configuration value (e.g. amperstand config set logging.level DEBUG)."""
     try:
         set_value(key, value)
     except ValueError as exc:
@@ -723,7 +723,7 @@ def vault_sync() -> None:
     state = AppState()
     vault = state.get_vault()
     if not vault:
-        typer.echo("No vault configured. Run 'ampersand vault init <path>' first.", err=True)
+        typer.echo("No vault configured. Run 'amperstand vault init <path>' first.", err=True)
         raise typer.Exit(code=1)
 
     vault_path = Path(vault["path"])
@@ -756,7 +756,7 @@ def vault_status() -> None:
         typer.echo("Warning: path is not a Git repository.", err=True)
         return
 
-    from ampersand.vault import _git
+    from amperstand.vault import _git
 
     # Uncommitted changes
     result = _git(vault_path, "status", "--porcelain")
@@ -815,7 +815,7 @@ def backend_set_http(
         None, "--api-key-env", help="Name of the env var holding the bearer token."
     ),
 ) -> None:
-    """Point capture flows at a remote ampersand-server (HTTPBackend)."""
+    """Point capture flows at a remote amperstand-server (HTTPBackend)."""
     if not api_key and not api_key_env:
         typer.echo("Provide either --api-key or --api-key-env.", err=True)
         raise typer.Exit(code=1)
@@ -830,7 +830,7 @@ def backend_set_http(
 
 @backend_app.command("set-store")
 def backend_set_store(
-    path: Path = typer.Argument(help="Local vault data dir, e.g. /var/lib/ampersand/vault"),
+    path: Path = typer.Argument(help="Local vault data dir, e.g. /var/lib/amperstand/vault"),
 ) -> None:
     """Point capture flows at a local MarkdownStore (StoreBackend)."""
     cfg = {"kind": "store", "store": {"path": str(path.expanduser())}}
@@ -844,5 +844,5 @@ def backend_clear() -> None:
     clear_backend_config()
     typer.echo(
         "Backend cleared. Capture flows will error out until a backend is set "
-        "again with `ampersand vault backend set-http|set-store ...`."
+        "again with `amperstand vault backend set-http|set-store ...`."
     )

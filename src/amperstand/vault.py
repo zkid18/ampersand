@@ -76,7 +76,7 @@ def sync(vault_path: Path) -> None:
     except VaultError as exc:
         raise VaultError(
             f"Merge conflict during pull. Resolve manually in {vault_path} "
-            "then run 'ampersand vault sync' again."
+            "then run 'amperstand vault sync' again."
         ) from exc
 
     _git(vault_path, "push", "origin", branch)

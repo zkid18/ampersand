@@ -1,18 +1,18 @@
-"""Centralized config.json management for Ampersand."""
+"""Centralized config.json management for Amperstand."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from ampersand.state import DEFAULT_STATE_DIR
+from amperstand.state import DEFAULT_STATE_DIR
 
 CONFIG_FILE = "config.json"
 
 DEFAULTS: dict[str, dict] = {
     "logging": {
         "level": "INFO",
-        "file": "~/.ampersand/ampersand.log",
+        "file": "~/.amperstand/amperstand.log",
     },
 }
 
@@ -173,7 +173,7 @@ def load_backend_config(state_dir: Path = DEFAULT_STATE_DIR) -> dict | None:
 
     Shape:
         {"kind": "http", "http": {"url": "...", "api_key_env": "..."}}
-        {"kind": "store", "store": {"path": "/var/lib/ampersand/vault"}}
+        {"kind": "store", "store": {"path": "/var/lib/amperstand/vault"}}
 
     Returns None if not configured (caller should fall back to legacy
     save_markdown / commit_file path or raise an error).

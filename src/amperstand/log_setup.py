@@ -1,4 +1,4 @@
-"""Configure file-based logging for Ampersand."""
+"""Configure file-based logging for Amperstand."""
 
 from __future__ import annotations
 
@@ -22,14 +22,14 @@ def setup_logging() -> None:
     _initialized = True
 
     try:
-        from ampersand.config import get_section
+        from amperstand.config import get_section
 
         cfg = get_section("logging")
         level_name = cfg.get("level", "INFO")
-        log_file = Path(cfg.get("file", "~/.ampersand/ampersand.log")).expanduser()
+        log_file = Path(cfg.get("file", "~/.amperstand/amperstand.log")).expanduser()
     except Exception:
         level_name = "INFO"
-        log_file = Path.home() / ".ampersand" / "ampersand.log"
+        log_file = Path.home() / ".amperstand" / "amperstand.log"
 
     level = getattr(logging, level_name.upper(), logging.INFO)
 
@@ -49,6 +49,6 @@ def setup_logging() -> None:
                           datefmt="%Y-%m-%d %H:%M:%S")
     )
 
-    root = logging.getLogger("ampersand")
+    root = logging.getLogger("amperstand")
     root.setLevel(level)
     root.addHandler(handler)

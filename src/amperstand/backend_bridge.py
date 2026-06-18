@@ -1,4 +1,4 @@
-"""Bridge between the CLI's capture flows and ampersand_core's VaultBackend.
+"""Bridge between the CLI's capture flows and amperstand_core's VaultBackend.
 
 The CLI deals in `CapturedContent` (title, url, author, body markdown, tags…).
 The backend's `create()` takes a body string + frontmatter dict. This module
@@ -10,14 +10,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from ampersand_core.backend import (
+from amperstand_core.backend import (
     BackendError,
     VaultBackend,
     build_backend,
 )
-from ampersand_core.models import CapturedContent
+from amperstand_core.models import CapturedContent
 
-from ampersand.config import load_backend_config
+from amperstand.config import load_backend_config
 
 
 def get_backend() -> VaultBackend | None:
