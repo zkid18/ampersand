@@ -29,9 +29,11 @@ jobs:
 
       - name: Run pytest
         run: |
-          # Treat pytest's "no tests collected" (exit 5) as success while
-          # the CLI doesn't have its own tests yet. Real failures (exit 1)
-          # still surface.
-          pytest -q --tb=short; ec=$?
-          if [ $ec -eq 5 ]; then echo "(no tests yet — clean)"; exit 0; fi
-          exit $ec
+          # `bash -e` would abort on the pytest line before we can inspect
+          # its exit code, so capture it via `|| ec=$?` instead of `; ec=$?`.
+          # Then treat "no tests collected" (exit 5) as success while the
+          # CLI doesn't have its own tests yet.
+          ec=0
+          pytest -q --tb=short || ec=$?
+          if [ "$ec" -eq 5 ]; then echo "(no tests yet — clean)"; exit 0; fi
+          exit "$ec"
